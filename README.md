@@ -11,7 +11,7 @@
 **A procedural first-person 3D asteroid voyage through the Solar System in the browser.**
 
 Ride a tumbling asteroid along a closed orbital loop from Neptune at 30.07 AU down to a 0.09 AU solar perihelion,<br />
-with zero external textures, models, or audio files—every planet, rock class, shader, and sound is generated at runtime.
+with zero external textures, models, or audio files; every planet, rock class, shader, and sound is generated at runtime.
 
 [![Three.js](https://img.shields.io/badge/Three.js-0.187.0-000000?style=flat-square&logo=threedotjs&logoColor=white)](https://threejs.org/)
 [![React](https://img.shields.io/badge/React-19.0.1-149ECA?style=flat-square&logo=react&logoColor=white)](https://react.dev/)
@@ -62,10 +62,10 @@ flowchart LR
     E --> A
 ```
 
-1. **Procedural world bootstrap** — On mount, `SolarVoyageEngine` builds all geometry and textures in memory: `7,200` desktop (`4,800` mobile) blackbody-colored stars with 32% concentrated along an inclined 38° galactic band, all 8 planets plus Earth's Moon with `1024×512` canvas PBR maps, a 9-part foreground asteroid rim (`asteroidRim.ts`), and 8 instanced asteroid classes (`solarSystem.ts`).
-2. **Orbital spline & steering** — Each frame advances `progress` along a closed 14-point `CatmullRomCurve3` starting at Neptune (`progress = 0.032`). Lateral (`±16.5`) and vertical (`±8.4`) flight offsets respond to PC `WASD`/Arrow keys or mobile edge-touch presses, banking the camera and foreground prow smoothly into turns.
-3. **Collision, chipping & 60 s stasis** — Incoming instanced asteroids are tested against the foreground hull radius (`rock.radius + 2.45`). Impacts chip and deflect the struck body, emit pooled shards matching its material class (rock slab, metallic splinter, or ice crystal), trigger layered audio/haptic cues, and reduce hull integrity. At `0`, forward travel pauses for `60 s` while free-look camera rotation unlocks; once refilled, the view glides back along the shortest angular arc.
-4. **HDR compositing & adaptive scaling** — Scenes render through a `HalfFloatType` `EffectComposer` with `4×` desktop (`2×` mobile) MSAA, `UnrealBloomPass` (`threshold: 1.08`), and a single-pass `CinematicPostShader` combining 5-tap AMD FidelityFX CAS sharpening, peripheral-only motion blur (`radialDist > 0.44`), 14-sample radial solar rays, perihelion heat shimmer, and film grain.
+1. **Procedural world bootstrap:** On mount, `SolarVoyageEngine` builds all geometry and textures in memory: `7,200` desktop (`4,800` mobile) blackbody-colored stars with 32% concentrated along an inclined 38° galactic band, all 8 planets plus Earth's Moon with `1024×512` canvas PBR maps, a 9-part foreground asteroid rim (`asteroidRim.ts`), and 8 instanced asteroid classes (`solarSystem.ts`).
+2. **Orbital spline & steering:** Each frame advances `progress` along a closed 14-point `CatmullRomCurve3` starting at Neptune (`progress = 0.032`). Lateral (`±16.5`) and vertical (`±8.4`) flight offsets respond to PC `WASD`/Arrow keys or mobile edge-touch presses, banking the camera and foreground prow smoothly into turns.
+3. **Collision, chipping & 60 s stasis:** Incoming instanced asteroids are tested against the foreground hull radius (`rock.radius + 2.45`). Impacts chip and deflect the struck body, emit pooled shards matching its material class (rock slab, metallic splinter, or ice crystal), trigger layered audio/haptic cues, and reduce hull integrity. At `0`, forward travel pauses for `60 s` while free-look camera rotation unlocks; once refilled, the view glides back along the shortest angular arc.
+4. **HDR compositing & adaptive scaling:** Scenes render through a `HalfFloatType` `EffectComposer` with `4×` desktop (`2×` mobile) MSAA, `UnrealBloomPass` (`threshold: 1.08`), and a single-pass `CinematicPostShader` combining 5-tap AMD FidelityFX CAS sharpening, peripheral-only motion blur (`radialDist > 0.44`), 14-sample radial solar rays, perihelion heat shimmer, and film grain.
 
 > [!NOTE]
 > `SolarVoyageEngine` inspects the active WebGL renderer string at startup. On software rasterizers (`SwiftShader` / `llvmpipe`), it automatically skips shadows and post-processing and paces frames with `fenceSync` to keep the browser responsive. On hardware GPUs, DPR is capped to a pixel budget (`8.3M` px desktop / `2.2M` px mobile) and steps down if average frame time exceeds `36 ms` for `3 s`.
