@@ -14,48 +14,50 @@ export function createRng(seed: number): () => number {
   };
 }
 
+const INV_UINT32_MAX = 1 / 4294967295;
+
 function hash3(ix: number, iy: number, iz: number): number {
-  let n = Math.imul(ix, 374761393) + Math.imul(iy, 668265263) + Math.imul(iz, 2147483647);
+  let n = (Math.imul(ix, 374761393) + Math.imul(iy, 668265263) + Math.imul(iz, 2147483647)) | 0;
   n = (n ^ (n >>> 13)) >>> 0;
   n = Math.imul(n, 1274126177) >>> 0;
-  return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
-}
-
-function fade(t: number): number {
-  return t * t * t * (t * (t * 6 - 15) + 10);
-}
-
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
+  return ((n ^ (n >>> 16)) >>> 0) * INV_UINT32_MAX;
 }
 
 export function valueNoise3D(x: number, y: number, z: number): number {
-  const ix = Math.floor(x);
-  const iy = Math.floor(y);
-  const iz = Math.floor(z);
+  const ix = x >= 0 ? x | 0 : (x | 0) === x ? x | 0 : (x | 0) - 1;
+  const iy = y >= 0 ? y | 0 : (y | 0) === y ? y | 0 : (y | 0) - 1;
+  const iz = z >= 0 ? z | 0 : (z | 0) === z ? z | 0 : (z | 0) - 1;
 
-  const fx = fade(x - ix);
-  const fy = fade(y - iy);
-  const fz = fade(z - iz);
+  const tx = x - ix;
+  const ty = y - iy;
+  const tz = z - iz;
+
+  const fx = tx * tx * tx * (tx * (tx * 6 - 15) + 10);
+  const fy = ty * ty * ty * (ty * (ty * 6 - 15) + 10);
+  const fz = tz * tz * tz * (tz * (tz * 6 - 15) + 10);
+
+  const ix1 = ix + 1;
+  const iy1 = iy + 1;
+  const iz1 = iz + 1;
 
   const n000 = hash3(ix, iy, iz);
-  const n100 = hash3(ix + 1, iy, iz);
-  const n010 = hash3(ix, iy + 1, iz);
-  const n110 = hash3(ix + 1, iy + 1, iz);
-  const n001 = hash3(ix, iy, iz + 1);
-  const n101 = hash3(ix + 1, iy, iz + 1);
-  const n011 = hash3(ix, iy + 1, iz + 1);
-  const n111 = hash3(ix + 1, iy + 1, iz + 1);
+  const n100 = hash3(ix1, iy, iz);
+  const n010 = hash3(ix, iy1, iz);
+  const n110 = hash3(ix1, iy1, iz);
+  const n001 = hash3(ix, iy, iz1);
+  const n101 = hash3(ix1, iy, iz1);
+  const n011 = hash3(ix, iy1, iz1);
+  const n111 = hash3(ix1, iy1, iz1);
 
-  const nx00 = lerp(n000, n100, fx);
-  const nx10 = lerp(n010, n110, fx);
-  const nx01 = lerp(n001, n101, fx);
-  const nx11 = lerp(n011, n111, fx);
+  const nx00 = n000 + (n100 - n000) * fx;
+  const nx10 = n010 + (n110 - n010) * fx;
+  const nx01 = n001 + (n101 - n001) * fx;
+  const nx11 = n011 + (n111 - n011) * fx;
 
-  const nxy0 = lerp(nx00, nx10, fy);
-  const nxy1 = lerp(nx01, nx11, fy);
+  const nxy0 = nx00 + (nx10 - nx00) * fy;
+  const nxy1 = nx01 + (nx11 - nx01) * fy;
 
-  return lerp(nxy0, nxy1, fz);
+  return nxy0 + (nxy1 - nxy0) * fz;
 }
 
 export function fbm3D(
@@ -109,6 +111,7 @@ export interface CraterDef {
   ny: number;
   nz: number;
   radius: number;
+  invRadius: number;
   depth: number;
   cosLimit: number;
 }
@@ -126,12 +129,16 @@ export function generateSphereCraters(count: number, seed: number, minR = 0.04, 
       ny: u,
       nz: s * Math.sin(phi),
       radius: r,
+      invRadius: 1 / r,
       depth: 0.45 + rng() * 0.55,
       cosLimit: Math.cos(Math.min(Math.PI, r * 1.42)),
     });
   }
   return craters;
 }
+
+const INV_RIM_IN = 1 / (0.12 * 0.12);
+const INV_RIM_OUT = 1 / (0.15 * 0.15);
 
 export function evaluateCraterHeight(
   nx: number,
@@ -144,17 +151,19 @@ export function evaluateCraterHeight(
     const c = craters[i];
     const dot = nx * c.nx + ny * c.ny + nz * c.nz;
     if (dot < c.cosLimit) continue;
-    const dist = Math.acos(Math.min(1, Math.max(-1, dot)));
-    const q = dist / c.radius;
+    const clampedDot = dot > 1 ? 1 : dot < -1 ? -1 : dot;
+    const q = Math.acos(clampedDot) * c.invRadius;
     if (q < 1.38) {
+      const dq = q - 0.98;
+      const dq2 = dq * dq;
       if (q < 1.0) {
         // Sharp bowl depression with terraced inner wall & crisp raised rim shoulder
         const bowl = (q * q - 1.0) * 0.68;
-        const rim = Math.exp(-Math.pow((q - 0.98) / 0.12, 2)) * 0.38;
+        const rim = Math.exp(-dq2 * INV_RIM_IN) * 0.38;
         h += (bowl + rim) * c.depth;
       } else {
         // Ejecta rim falloff
-        const rim = Math.exp(-Math.pow((q - 0.98) / 0.15, 2)) * 0.35;
+        const rim = Math.exp(-dq2 * INV_RIM_OUT) * 0.35;
         h += rim * c.depth;
       }
     }

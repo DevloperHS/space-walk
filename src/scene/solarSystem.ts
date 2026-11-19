@@ -11,17 +11,15 @@ import {
 } from './shaders';
 import {
   AsteroidSurfaceStyle,
-  createCrateredBodyTextures,
-  createDiverseAsteroidTextures,
-  createEarthTextures,
-  createJupiterTextures,
-  createMarsTextures,
-  createNeptuneTextures,
-  createSaturnTextures,
+  createDiverseAsteroidPreviewTextures,
+  createPlanetPreviewTextures,
   createSoftRadialGlowTexture,
-  createUranusTextures,
-  createVenusTextures,
+  enqueueAsteroidUpgrade,
+  enqueuePlanetUpgrade,
+  PlanetTextureSet,
 } from './textures';
+import { TextureJob } from './textureGenerators';
+import { ProgressiveTexturePipeline } from './texturePipeline';
 
 /**
  * Cohesive World-Taste Solar System Builder:
@@ -344,11 +342,58 @@ function buildFractureShardGeometry(
 export function createSolarSystemWorld(
   maxAniso: number,
   isMobile: boolean,
+  texturePipeline: ProgressiveTexturePipeline,
 ): SolarSystemWorld {
   const root = new THREE.Group();
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
-  const textures: THREE.Texture[] = [];
+  const activeTextures = new Set<THREE.Texture>();
+  let isDisposed = false;
+
+  const trackTextureSet = (set: {
+    map?: THREE.Texture;
+    normalMap?: THREE.Texture;
+    roughnessMap?: THREE.Texture;
+    metalnessMap?: THREE.Texture;
+    cloudsMap?: THREE.Texture;
+    nightMap?: THREE.Texture;
+    ringMap?: THREE.Texture;
+  }) => {
+    if (set.map) activeTextures.add(set.map);
+    if (set.normalMap) activeTextures.add(set.normalMap);
+    if (set.roughnessMap) activeTextures.add(set.roughnessMap);
+    if (set.metalnessMap) activeTextures.add(set.metalnessMap);
+    if (set.cloudsMap) activeTextures.add(set.cloudsMap);
+    if (set.nightMap) activeTextures.add(set.nightMap);
+    if (set.ringMap) activeTextures.add(set.ringMap);
+  };
+
+  const disposeTextureSet = (set: {
+    map?: THREE.Texture;
+    normalMap?: THREE.Texture;
+    roughnessMap?: THREE.Texture;
+    metalnessMap?: THREE.Texture;
+    cloudsMap?: THREE.Texture;
+    nightMap?: THREE.Texture;
+    ringMap?: THREE.Texture;
+  }) => {
+    const list = [
+      set.map,
+      set.normalMap,
+      set.roughnessMap,
+      set.metalnessMap,
+      set.cloudsMap,
+      set.nightMap,
+      set.ringMap,
+    ];
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      if (t) {
+        activeTextures.delete(t);
+        t.dispose();
+      }
+    }
+  };
 
   // The Sun sits at the gravitational anchor (0, 0, 0)
   const sunPosition = new THREE.Vector3(0, 0, 0);
@@ -502,7 +547,7 @@ export function createSolarSystemWorld(
   sunGroup.add(coronaMesh);
 
   const glowTex = createSoftRadialGlowTexture(256);
-  textures.push(glowTex);
+  activeTextures.add(glowTex);
   const sunSpriteMat = new THREE.SpriteMaterial({
     map: glowTex,
     color: new THREE.Color(0xffdfa8),
@@ -547,15 +592,22 @@ export function createSolarSystemWorld(
     atmoPower?: number;
     bounceTint: number;
     harmonicIndex: number;
-    textures: ReturnType<typeof createNeptuneTextures>;
-    saturnRingMap?: THREE.CanvasTexture;
+    textureJob: TextureJob;
+    upgradePriority: number;
+    hasSaturnRing?: boolean;
     uranusRing?: boolean;
     hasMoon?: boolean;
   }
 
-  const saturnTex = createSaturnTextures(maxAniso);
-  const earthTex = createEarthTextures(maxAniso);
-  const moonTex = createCrateredBodyTextures(maxAniso, 8821, [74, 73, 71], [178, 176, 171], 74);
+  const moonJob: TextureJob = {
+    kind: 'crateredBody',
+    w: 1024,
+    h: 512,
+    seed: 8821,
+    baseDark: [74, 73, 71],
+    baseLight: [178, 176, 171],
+    craterCount: 74,
+  };
 
   const planetSpecs: PlanetSpec[] = [
     {
@@ -576,7 +628,8 @@ export function createSolarSystemWorld(
       atmoPower: 3.1,
       bounceTint: 0x264b8c,
       harmonicIndex: 0,
-      textures: createNeptuneTextures(maxAniso),
+      textureJob: { kind: 'neptune', w: 1024, h: 512 },
+      upgradePriority: 1,
     },
     {
       id: 'uranus',
@@ -596,7 +649,8 @@ export function createSolarSystemWorld(
       atmoPower: 3.3,
       bounceTint: 0x3e7482,
       harmonicIndex: 1,
-      textures: createUranusTextures(maxAniso),
+      textureJob: { kind: 'uranus', w: 1024, h: 512 },
+      upgradePriority: 3,
       uranusRing: true,
     },
     {
@@ -618,8 +672,9 @@ export function createSolarSystemWorld(
       atmoPower: 3.6,
       bounceTint: 0x7d6b4c,
       harmonicIndex: 2,
-      textures: saturnTex,
-      saturnRingMap: saturnTex.ringMap,
+      textureJob: { kind: 'saturn', w: 1024, h: 512, rw: 2048, rh: 16 },
+      upgradePriority: 3,
+      hasSaturnRing: true,
     },
     {
       id: 'jupiter',
@@ -640,7 +695,8 @@ export function createSolarSystemWorld(
       atmoPower: 3.8,
       bounceTint: 0x805e44,
       harmonicIndex: 3,
-      textures: createJupiterTextures(maxAniso),
+      textureJob: { kind: 'jupiter', w: 1024, h: 512 },
+      upgradePriority: 5,
     },
     {
       id: 'mars',
@@ -660,7 +716,8 @@ export function createSolarSystemWorld(
       atmoPower: 3.8,
       bounceTint: 0x7c4632,
       harmonicIndex: 5,
-      textures: createMarsTextures(maxAniso),
+      textureJob: { kind: 'mars', w: 1024, h: 512 },
+      upgradePriority: 6,
     },
     {
       id: 'earth',
@@ -680,7 +737,8 @@ export function createSolarSystemWorld(
       atmoPower: 3.0,
       bounceTint: 0x355c8e,
       harmonicIndex: 6,
-      textures: earthTex,
+      textureJob: { kind: 'earth', w: 1024, h: 512 },
+      upgradePriority: 6,
       hasMoon: true,
     },
     {
@@ -701,7 +759,8 @@ export function createSolarSystemWorld(
       atmoPower: 3.1,
       bounceTint: 0x8d7244,
       harmonicIndex: 7,
-      textures: createVenusTextures(maxAniso),
+      textureJob: { kind: 'venus', w: 1024, h: 512 },
+      upgradePriority: 7,
     },
     {
       id: 'mercury',
@@ -718,7 +777,16 @@ export function createSolarSystemWorld(
       roughness: 0.94,
       bounceTint: 0x5a5652,
       harmonicIndex: 8,
-      textures: createCrateredBodyTextures(maxAniso, 3107, [62, 58, 55], [156, 148, 140], 84),
+      textureJob: {
+        kind: 'crateredBody',
+        w: 1024,
+        h: 512,
+        seed: 3107,
+        baseDark: [62, 58, 55],
+        baseLight: [156, 148, 140],
+        craterCount: 84,
+      },
+      upgradePriority: 7,
     },
   ];
 
@@ -774,21 +842,18 @@ export function createSolarSystemWorld(
     tiltGroup.rotation.z = THREE.MathUtils.degToRad(spec.axialTiltDeg);
     pGroup.add(tiltGroup);
 
-    // Track textures for disposal
-    textures.push(spec.textures.map);
-    if (spec.textures.normalMap) textures.push(spec.textures.normalMap);
-    if (spec.textures.roughnessMap) textures.push(spec.textures.roughnessMap);
-    if (spec.textures.cloudsMap) textures.push(spec.textures.cloudsMap);
-    if (spec.textures.nightMap) textures.push(spec.textures.nightMap);
+    // Instant lightweight 128x64 preview for zero-freeze startup; full 1024x512 streams off-thread
+    let currentPlanetTex: PlanetTextureSet = createPlanetPreviewTextures(spec.textureJob, maxAniso);
+    trackTextureSet(currentPlanetTex);
 
     const pMat = new THREE.MeshStandardMaterial({
-      map: spec.textures.map,
-      normalMap: spec.textures.normalMap,
-      normalScale: spec.textures.normalMap
+      map: currentPlanetTex.map,
+      normalMap: currentPlanetTex.normalMap,
+      normalScale: currentPlanetTex.normalMap
         ? new THREE.Vector2(spec.id === 'earth' ? 0.95 : 1.35, spec.id === 'earth' ? 0.95 : 1.35)
         : undefined,
-      roughnessMap: spec.textures.roughnessMap,
-      roughness: spec.textures.roughnessMap ? 1.0 : spec.roughness,
+      roughnessMap: currentPlanetTex.roughnessMap,
+      roughness: currentPlanetTex.roughnessMap ? 1.0 : spec.roughness,
       metalness: spec.id === 'earth' ? 0.06 : 0.02,
     });
 
@@ -822,10 +887,14 @@ export function createSolarSystemWorld(
     tiltGroup.add(bodyMesh);
     rotatingBodies.push({ mesh: bodyMesh, speed: spec.rotationSpeed });
 
+    let cloudMat: THREE.MeshStandardMaterial | null = null;
+    let nightMat: THREE.ShaderMaterial | null = null;
+    let ringMat: THREE.ShaderMaterial | null = null;
+
     // Earth drifting volumetric clouds + dark-side nocturnal city lights + orbiting Moon
-    if (spec.id === 'earth' && spec.textures.cloudsMap && spec.textures.nightMap) {
-      const cloudMat = new THREE.MeshStandardMaterial({
-        map: spec.textures.cloudsMap,
+    if (spec.id === 'earth' && currentPlanetTex.cloudsMap && currentPlanetTex.nightMap) {
+      cloudMat = new THREE.MeshStandardMaterial({
+        map: currentPlanetTex.cloudsMap,
         transparent: true,
         opacity: 0.92,
         roughness: 0.94,
@@ -843,7 +912,7 @@ export function createSolarSystemWorld(
       tiltGroup.add(cloudMesh);
       rotatingBodies.push({ mesh: cloudMesh, speed: spec.rotationSpeed * 1.32 });
 
-      const nightMat = createEarthNightLightsMaterial(spec.textures.nightMap, sunPosition);
+      nightMat = createEarthNightLightsMaterial(currentPlanetTex.nightMap, sunPosition);
       materials.push(nightMat);
       const nightMesh = new THREE.Mesh(sharedUnitSphere, nightMat);
       nightMesh.scale.setScalar(spec.radius * 1.004);
@@ -851,11 +920,11 @@ export function createSolarSystemWorld(
       rotatingBodies.push({ mesh: nightMesh, speed: spec.rotationSpeed });
 
       if (spec.hasMoon) {
-        textures.push(moonTex.map);
-        if (moonTex.normalMap) textures.push(moonTex.normalMap);
+        let currentMoonTex = createPlanetPreviewTextures(moonJob, maxAniso);
+        trackTextureSet(currentMoonTex);
         const moonMat = new THREE.MeshStandardMaterial({
-          map: moonTex.map,
-          normalMap: moonTex.normalMap,
+          map: currentMoonTex.map,
+          normalMap: currentMoonTex.normalMap,
           normalScale: new THREE.Vector2(1.4, 1.4),
           roughness: 0.94,
           metalness: 0.02,
@@ -871,6 +940,19 @@ export function createSolarSystemWorld(
         moonMesh.position.set(-22, 6.5, 16);
         pGroup.add(moonMesh);
         rotatingBodies.push({ mesh: moonMesh, speed: 0.015 });
+
+        enqueuePlanetUpgrade(texturePipeline, 7, moonJob, maxAniso, (fullMoon) => {
+          if (isDisposed) {
+            disposeTextureSet(fullMoon);
+            return;
+          }
+          const prev = currentMoonTex;
+          currentMoonTex = fullMoon;
+          moonMat.map = fullMoon.map;
+          if (fullMoon.normalMap) moonMat.normalMap = fullMoon.normalMap;
+          disposeTextureSet(prev);
+          trackTextureSet(fullMoon);
+        });
       }
     }
 
@@ -893,8 +975,7 @@ export function createSolarSystemWorld(
     }
 
     // Saturn custom shadow-receiving multi-band translucent ice rings
-    if (spec.saturnRingMap) {
-      textures.push(spec.saturnRingMap);
+    if (spec.hasSaturnRing && currentPlanetTex.ringMap) {
       const innerR = spec.radius * 1.26;
       const outerR = spec.radius * 2.46;
       const ringGeo = new THREE.RingGeometry(innerR, outerR, 192, 4);
@@ -911,8 +992,8 @@ export function createSolarSystemWorld(
       }
       geometries.push(ringGeo);
 
-      const ringMat = createSaturnRingMaterial(
-        spec.saturnRingMap,
+      ringMat = createSaturnRingMaterial(
+        currentPlanetTex.ringMap,
         planetPos,
         spec.radius * 0.97,
         sunPosition,
@@ -923,6 +1004,30 @@ export function createSolarSystemWorld(
       ringMesh.rotation.x = Math.PI / 2;
       tiltGroup.add(ringMesh);
     }
+
+    // Schedule off-main-thread full-resolution 1024x512 (and 2048x16 ring) upgrade
+    enqueuePlanetUpgrade(
+      texturePipeline,
+      spec.upgradePriority,
+      spec.textureJob,
+      maxAniso,
+      (fullSet) => {
+        if (isDisposed) {
+          disposeTextureSet(fullSet);
+          return;
+        }
+        const prev = currentPlanetTex;
+        currentPlanetTex = fullSet;
+        pMat.map = fullSet.map;
+        if (fullSet.normalMap) pMat.normalMap = fullSet.normalMap;
+        if (fullSet.roughnessMap) pMat.roughnessMap = fullSet.roughnessMap;
+        if (cloudMat && fullSet.cloudsMap) cloudMat.map = fullSet.cloudsMap;
+        if (nightMat && fullSet.nightMap) nightMat.uniforms.uNightMap.value = fullSet.nightMap;
+        if (ringMat && fullSet.ringMap) ringMat.uniforms.uRingMap.value = fullSet.ringMap;
+        disposeTextureSet(prev);
+        trackTextureSet(fullSet);
+      },
+    );
 
     // Subtle thin dark icy ring for tilted Uranus
     if (spec.uranusRing) {
@@ -1258,41 +1363,40 @@ export function createSolarSystemWorld(
     if (spec.surfaceStyle === 'refractiveIce') {
       mat = iceDebrisMat;
     } else {
-      const texSet = createDiverseAsteroidTextures(
+      let currentTexSet = createDiverseAsteroidPreviewTextures(
         maxAniso,
         spec.surfaceStyle,
         spec.texSeed,
         spec.texRepeat,
       );
-      textures.push(texSet.map, texSet.normalMap, texSet.roughnessMap);
-      if (texSet.metalnessMap) textures.push(texSet.metalnessMap);
+      trackTextureSet(currentTexSet);
 
       const pbrMat =
         spec.materialCfg.clearcoat !== undefined
           ? new THREE.MeshPhysicalMaterial({
-              map: texSet.map,
-              normalMap: texSet.normalMap,
+              map: currentTexSet.map,
+              normalMap: currentTexSet.normalMap,
               normalScale: new THREE.Vector2(
                 spec.materialCfg.normalScale,
                 spec.materialCfg.normalScale,
               ),
-              roughnessMap: texSet.roughnessMap,
+              roughnessMap: currentTexSet.roughnessMap,
               roughness: spec.materialCfg.roughness,
-              metalnessMap: texSet.metalnessMap,
+              metalnessMap: currentTexSet.metalnessMap,
               metalness: spec.materialCfg.metalness,
               clearcoat: spec.materialCfg.clearcoat,
               clearcoatRoughness: 0.32,
             })
           : new THREE.MeshStandardMaterial({
-              map: texSet.map,
-              normalMap: texSet.normalMap,
+              map: currentTexSet.map,
+              normalMap: currentTexSet.normalMap,
               normalScale: new THREE.Vector2(
                 spec.materialCfg.normalScale,
                 spec.materialCfg.normalScale,
               ),
-              roughnessMap: texSet.roughnessMap,
+              roughnessMap: currentTexSet.roughnessMap,
               roughness: spec.materialCfg.roughness,
-              metalnessMap: texSet.metalnessMap,
+              metalnessMap: currentTexSet.metalnessMap,
               metalness: spec.materialCfg.metalness,
             });
 
@@ -1301,6 +1405,39 @@ export function createSolarSystemWorld(
         albedoContrast: spec.materialCfg.albedoContrast,
         normalStrength: spec.materialCfg.normalStrength,
       });
+
+      const upgradePriority =
+        spec.region === 'outerKuiper' || spec.region === 'everywhere'
+          ? 2
+          : spec.region === 'beltHeavy'
+            ? 4
+            : 5;
+      enqueueAsteroidUpgrade(
+        texturePipeline,
+        upgradePriority,
+        {
+          kind: 'diverseAsteroid',
+          size: 512,
+          style: spec.surfaceStyle,
+          seed: spec.texSeed,
+        },
+        maxAniso,
+        spec.texRepeat,
+        (fullSet) => {
+          if (isDisposed) {
+            disposeTextureSet(fullSet);
+            return;
+          }
+          const prev = currentTexSet;
+          currentTexSet = fullSet;
+          pbrMat.map = fullSet.map;
+          pbrMat.normalMap = fullSet.normalMap;
+          pbrMat.roughnessMap = fullSet.roughnessMap;
+          if (fullSet.metalnessMap) pbrMat.metalnessMap = fullSet.metalnessMap;
+          disposeTextureSet(prev);
+          trackTextureSet(fullSet);
+        },
+      );
 
       materials.push(pbrMat);
       mat = pbrMat;
@@ -1934,9 +2071,11 @@ export function createSolarSystemWorld(
   }
 
   function dispose() {
+    isDisposed = true;
     geometries.forEach((g) => g.dispose());
     materials.forEach((m) => m.dispose());
-    textures.forEach((t) => t.dispose());
+    activeTextures.forEach((t) => t.dispose());
+    activeTextures.clear();
   }
 
   return {

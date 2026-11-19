@@ -10,6 +10,7 @@ import { SpaceAudioEngine } from '../audio/SpaceAudioEngine';
 import { AsteroidRimRig, createAsteroidRim } from './asteroidRim';
 import { CinematicPostShader } from './shaders';
 import { createSolarSystemWorld, SectorInfo, SolarSystemWorld } from './solarSystem';
+import { ProgressiveTexturePipeline } from './texturePipeline';
 
 export interface VoyageHudSnapshot {
   sectorName: string;
@@ -28,18 +29,37 @@ export interface VoyageEngineCallbacks {
   onContextLost: (lost: boolean) => void;
 }
 
-function detectSoftwareWebGL(): boolean {
+interface GpuProfile {
+  isSoftwareGl: boolean;
+  isLowEndGpu: boolean;
+}
+
+function detectGpuProfile(): GpuProfile {
   try {
     const probeCanvas = document.createElement('canvas');
     const gl = probeCanvas.getContext('webgl2') || probeCanvas.getContext('webgl');
-    if (!gl) return true;
+    if (!gl) return { isSoftwareGl: true, isLowEndGpu: true };
     const ext = gl.getExtension('WEBGL_debug_renderer_info');
     const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
     const gpu = String(gl.getParameter(param) || '');
     gl.getExtension('WEBGL_lose_context')?.loseContext();
-    return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+
+    const isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+    const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
+    const mem =
+      typeof navigator !== 'undefined'
+        ? (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8
+        : 8;
+    const weakGpuMatch =
+      /Mali-G5|Mali-G4|Mali-T|Adreno\s*\(TM\)\s*(3|4|5|61|62)|PowerVR|Intel.*(HD Graphics|UHD Graphics 6|Celeron|Pentium|Bay Trail)/i.test(
+        gpu,
+      );
+    return {
+      isSoftwareGl,
+      isLowEndGpu: isSoftwareGl || weakGpuMatch || cores <= 4 || mem <= 4,
+    };
   } catch {
-    return true;
+    return { isSoftwareGl: true, isLowEndGpu: true };
   }
 }
 
@@ -50,7 +70,9 @@ export class SolarVoyageEngine {
   private readonly haptics: HapticsEngine;
 
   private readonly isSoftwareGl: boolean;
+  private readonly isLowEndGpu: boolean;
   private readonly isMobile: boolean;
+  private readonly texturePipeline = new ProgressiveTexturePipeline();
 
   private renderer!: THREE.WebGLRenderer;
   private scene!: THREE.Scene;
@@ -113,6 +135,8 @@ export class SolarVoyageEngine {
   // Responsive multi-screen framing & adaptive PC/mobile DPR state
   private currentDpr = 1;
   private slowFrameAccum = 0;
+  private fastFrameAccum = 0;
+  private pauseNeedsRender = false;
   private responsiveBaseFov = 53;
   private rimBaseY = 0;
   private rimScaleX = 1;
@@ -159,7 +183,9 @@ export class SolarVoyageEngine {
     this.haptics = haptics;
     this.callbacks = callbacks;
 
-    this.isSoftwareGl = detectSoftwareWebGL();
+    const gpuProfile = detectGpuProfile();
+    this.isSoftwareGl = gpuProfile.isSoftwareGl;
+    this.isLowEndGpu = gpuProfile.isLowEndGpu;
     this.isMobile =
       typeof window !== 'undefined' &&
       (/iPhone|iPad|iPod|Android|Mobile/i.test(navigator.userAgent) ||
@@ -169,19 +195,32 @@ export class SolarVoyageEngine {
     this.bindEvents();
     this.lastNow = performance.now();
     this.tick();
+    // Kick off off-main-thread Web Worker full-resolution texture baking right after first frame queues
+    window.setTimeout(() => {
+      if (!this.disposed) {
+        this.texturePipeline.start();
+      }
+    }, 0);
   }
 
   /**
-   * Computes optimal pixel ratio for any screen from compact phones to 4K/5K ultrawide PC monitors,
-   * preserving crisp native sharpness while capping total shaded pixel count for smooth 60fps.
+   * Computes optimal pixel ratio for any screen from budget phones to 4K/5K ultrawide PC monitors,
+   * preserving crisp native sharpness while capping total shaded pixel count for smooth framerate.
    */
   private computeTargetDpr(width: number, height: number): number {
     if (this.isSoftwareGl) return 1;
-    const rawDpr = Math.min(window.devicePixelRatio || 1, 2);
-    const maxPixels = this.isMobile ? 2_200_000 : 8_300_000; // ~1080p mobile / ~4K PC ceiling
+    const rawDpr = Math.min(window.devicePixelRatio || 1, this.isLowEndGpu ? 1.5 : 2);
+    const maxPixels = this.isMobile
+      ? this.isLowEndGpu
+        ? 1_150_000
+        : 2_200_000
+      : this.isLowEndGpu
+        ? 2_400_000
+        : 8_300_000;
     const area = Math.max(1, width * height);
     const budgetDpr = Math.sqrt(maxPixels / area);
-    return Math.max(1, Math.min(rawDpr, budgetDpr));
+    const minDpr = this.isLowEndGpu ? 0.85 : 1;
+    return Math.max(minDpr, Math.min(rawDpr, budgetDpr));
   }
 
   /**
@@ -275,7 +314,8 @@ export class SolarVoyageEngine {
     //    self-shadows across the jagged foreground asteroid rim.
     this.sunKeyLight = new THREE.DirectionalLight(0xfff4e4, 1.35);
     this.sunKeyLight.castShadow = !this.isSoftwareGl;
-    this.sunKeyLight.shadow.mapSize.set(this.isMobile ? 512 : 1024, this.isMobile ? 512 : 1024);
+    const shadowSize = this.isMobile || this.isLowEndGpu ? 512 : 1024;
+    this.sunKeyLight.shadow.mapSize.set(shadowSize, shadowSize);
     this.sunKeyLight.shadow.camera.near = 1;
     this.sunKeyLight.shadow.camera.far = 36;
     const d = 5.5;
@@ -299,10 +339,16 @@ export class SolarVoyageEngine {
     const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
 
     // Build cohesive Solar System world & composite 9-part foreground asteroid rim
-    this.world = createSolarSystemWorld(maxAniso, this.isMobile);
+    // (instant lightweight preview textures -> off-thread Web Worker full-resolution upgrade)
+    this.world = createSolarSystemWorld(maxAniso, this.isMobile, this.texturePipeline);
     this.scene.add(this.world.root);
 
-    this.asteroidRim = createAsteroidRim(this.world.sunPosition, maxAniso, this.isSoftwareGl);
+    this.asteroidRim = createAsteroidRim(
+      this.world.sunPosition,
+      maxAniso,
+      this.isSoftwareGl,
+      this.texturePipeline,
+    );
     this.asteroidRim.group.scale.set(this.rimScaleX, this.rimScaleY, 1.0);
     this.cameraRig.add(this.asteroidRim.group);
 
@@ -311,13 +357,22 @@ export class SolarVoyageEngine {
       const physW = Math.max(1, Math.floor(width * this.currentDpr));
       const physH = Math.max(1, Math.floor(height * this.currentDpr));
       const isWebGL2 = this.renderer.capabilities.isWebGL2;
+      const msaaSamples = !isWebGL2
+        ? 0
+        : this.isMobile
+          ? this.isLowEndGpu
+            ? 0
+            : 2
+          : this.isLowEndGpu
+            ? 2
+            : 4;
 
       // Enable hardware MSAA samples on HalfFloat render target so edges never alias or blur
       const renderTarget = new THREE.WebGLRenderTarget(physW, physH, {
         type: THREE.HalfFloatType,
         minFilter: THREE.LinearFilter,
         magFilter: THREE.LinearFilter,
-        samples: isWebGL2 ? (this.isMobile ? 2 : 4) : 0,
+        samples: msaaSamples,
       });
       this.composer = new EffectComposer(this.renderer, renderTarget);
       this.composer.setPixelRatio(this.currentDpr);
@@ -326,7 +381,7 @@ export class SolarVoyageEngine {
       this.composer.addPass(new RenderPass(this.scene, this.camera));
 
       // Strictly HDR optical bloom (threshold 1.08 keeps sunlit planets & asteroids 100% razor-sharp)
-      const bloomScale = this.isMobile ? 0.5 : 0.75;
+      const bloomScale = this.isMobile || this.isLowEndGpu ? 0.5 : 0.75;
       this.bloomPass = new UnrealBloomPass(
         new THREE.Vector2(
           Math.max(1, Math.floor(width * bloomScale)),
@@ -334,7 +389,7 @@ export class SolarVoyageEngine {
         ),
         0.34, // strength
         0.38, // radius
-        1.08, // threshold (HDR solar corona & ice sparkles only — zero planetary wash)
+        1.08, // threshold (HDR solar corona & ice sparkles only, zero planetary wash)
       );
       this.composer.addPass(this.bloomPass);
 
@@ -346,8 +401,10 @@ export class SolarVoyageEngine {
       // Final ACESFilmic tone mapping + sRGB encoding pass
       this.composer.addPass(new OutputPass());
 
-      // Pre-warm shaders once on hardware GPU to avoid first-frame stutter
-      this.renderer.compile(this.scene, this.camera);
+      // Non-blocking parallel shader compilation (KHR_parallel_shader_compile) avoids startup freeze
+      if (typeof this.renderer.compileAsync === 'function') {
+        void this.renderer.compileAsync(this.scene, this.camera).catch(() => undefined);
+      }
     }
   }
 
@@ -373,7 +430,7 @@ export class SolarVoyageEngine {
       this.composer.setSize(width, height);
     }
     if (this.bloomPass) {
-      const bloomScale = this.isMobile ? 0.5 : 0.75;
+      const bloomScale = this.isMobile || this.isLowEndGpu ? 0.5 : 0.75;
       this.bloomPass.resolution.set(
         Math.max(1, Math.floor(width * bloomScale)),
         Math.max(1, Math.floor(height * bloomScale)),
@@ -384,6 +441,9 @@ export class SolarVoyageEngine {
         Math.max(1, Math.floor(width * this.currentDpr)),
         Math.max(1, Math.floor(height * this.currentDpr)),
       );
+    }
+    if (this.paused) {
+      this.pauseNeedsRender = true;
     }
   };
 
@@ -433,7 +493,9 @@ export class SolarVoyageEngine {
       this.verticalInput = 0;
       this.freeLookKeyYaw = 0;
       this.freeLookKeyPitch = 0;
+      this.pauseNeedsRender = true;
     } else {
+      this.pauseNeedsRender = false;
       this.lastNow = performance.now();
     }
   }
@@ -587,36 +649,50 @@ export class SolarVoyageEngine {
     this.lastNow = now;
 
     if (!this.contextLost) {
+      // Upload at most 1 completed off-thread full-resolution texture set per frame
+      const uploadedTexture = this.texturePipeline.flushOneUpload();
+
       if (!this.paused) {
         this.elapsedTime += dt;
         this.stepSimulation(dt, now);
       }
-      if (this.isSoftwareGl || !this.composer) {
-        this.renderer.render(this.scene, this.camera);
-      } else {
-        this.composer.render();
+
+      const shouldRender = !this.paused || this.pauseNeedsRender || uploadedTexture;
+      if (shouldRender) {
+        this.pauseNeedsRender = false;
+        if (this.isSoftwareGl || !this.composer) {
+          this.renderer.render(this.scene, this.camera);
+        } else {
+          this.composer.render();
+        }
       }
 
-      // Universal adaptive DPR guard (keeps both mid-range mobile & integrated PC GPUs smooth)
-      if (!this.isSoftwareGl && this.currentDpr > 1.2) {
-        if (rawDt > 0.036) {
+      // Universal adaptive DPR guard keeps low-end phones & integrated PC GPUs smooth
+      if (!this.isSoftwareGl && !this.paused) {
+        const minDpr = this.isLowEndGpu ? 0.85 : 1.0;
+        const w = Math.max(1, this.container.clientWidth || window.innerWidth);
+        const h = Math.max(1, this.container.clientHeight || window.innerHeight);
+        const targetCap = this.computeTargetDpr(w, h);
+
+        if (rawDt > 0.038 && this.currentDpr > minDpr) {
+          this.fastFrameAccum = 0;
           this.slowFrameAccum += rawDt;
-          if (this.slowFrameAccum > 3.0) {
-            this.currentDpr = Math.max(1.2, this.currentDpr - 0.25);
-            this.renderer.setPixelRatio(this.currentDpr);
-            this.composer?.setPixelRatio(this.currentDpr);
-            if (this.cinematicPass) {
-              const w = Math.max(1, this.container.clientWidth || window.innerWidth);
-              const h = Math.max(1, this.container.clientHeight || window.innerHeight);
-              this.cinematicPass.uniforms.uResolution.value.set(
-                Math.max(1, Math.floor(w * this.currentDpr)),
-                Math.max(1, Math.floor(h * this.currentDpr)),
-              );
-            }
+          if (this.slowFrameAccum > 1.5) {
+            this.currentDpr = Math.max(minDpr, this.currentDpr - 0.15);
+            this.applyDpr(w, h);
             this.slowFrameAccum = 0;
+          }
+        } else if (rawDt < 0.020 && this.currentDpr < targetCap) {
+          this.slowFrameAccum = Math.max(0, this.slowFrameAccum - rawDt * 0.5);
+          this.fastFrameAccum += rawDt;
+          if (this.fastFrameAccum > 4.0) {
+            this.currentDpr = Math.min(targetCap, this.currentDpr + 0.1);
+            this.applyDpr(w, h);
+            this.fastFrameAccum = 0;
           }
         } else {
           this.slowFrameAccum = Math.max(0, this.slowFrameAccum - rawDt * 0.5);
+          this.fastFrameAccum = Math.max(0, this.fastFrameAccum - rawDt * 0.5);
         }
       }
     }
@@ -627,6 +703,17 @@ export class SolarVoyageEngine {
       this.frameId = requestAnimationFrame(this.tick);
     }
   };
+
+  private applyDpr(width: number, height: number): void {
+    this.renderer.setPixelRatio(this.currentDpr);
+    this.composer?.setPixelRatio(this.currentDpr);
+    if (this.cinematicPass) {
+      this.cinematicPass.uniforms.uResolution.value.set(
+        Math.max(1, Math.floor(width * this.currentDpr)),
+        Math.max(1, Math.floor(height * this.currentDpr)),
+      );
+    }
+  }
 
   private stepSimulation(dt: number, nowMs: number): void {
     // Advance 1-minute recharge cycle when hull integrity hits 0
@@ -1134,6 +1221,7 @@ export class SolarVoyageEngine {
       this.renderer.domElement.removeEventListener('webglcontextrestored', this.handleContextRestored);
     }
 
+    this.texturePipeline.dispose();
     this.world?.dispose();
     this.asteroidRim?.dispose();
     this.envRT?.dispose();

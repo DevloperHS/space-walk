@@ -3,7 +3,7 @@
  * Synthesizes an evolving polyphonic ambient orchestral soundscape inspired by
  * deep-space radio plasma & cinema scores, dynamically modulated by orbital
  * velocity, planetary gravity wells, lateral steering inertia, and stereo-panned
- * Doppler debris flybys — zero external MP3 assets, zero 404s, instant playback.
+ * Doppler debris flybys: zero external MP3 assets, zero 404s, instant playback.
  */
 
 interface HarmonicChord {
@@ -652,7 +652,7 @@ export class SpaceAudioEngine {
 
   /**
    * Hypnotic, crystalline harmonic regeneration pulse synchronized with the
-   * pulsing green refilling bar — ascends softly across the active sector's key.
+   * pulsing green refilling bar; ascends softly across the active sector's key.
    */
   public triggerRechargePulse(progress: number): void {
     if (!this.initialized || !this.ctx || !this.masterGain || this.muted) return;

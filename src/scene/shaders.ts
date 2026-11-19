@@ -32,8 +32,9 @@ export function enhanceMaterialWithMicroDetail(
   options: MicroDetailOptions,
 ): void {
   const { scale, albedoContrast, normalStrength, zonalStretch = 1.0 } = options;
-  const cacheKey = `microdetail_${scale.toFixed(2)}_${albedoContrast.toFixed(3)}_${normalStrength.toFixed(3)}_${zonalStretch.toFixed(2)}`;
-  material.customProgramCacheKey = () => cacheKey;
+  // All four parameters are uniforms (not GLSL defines), so sharing one cache key eliminates
+  // ~12 redundant full PBR shader compilations on startup without changing a single rendered pixel.
+  material.customProgramCacheKey = () => 'microdetail_v1';
 
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uDetailScale = { value: scale };
@@ -222,7 +223,7 @@ export function createAtmosphereMaterial(
 }
 
 export function createSaturnRingMaterial(
-  ringMap: THREE.CanvasTexture,
+  ringMap: THREE.Texture,
   planetCenter: THREE.Vector3,
   planetRadius: number,
   sunPosition: THREE.Vector3,
@@ -296,7 +297,7 @@ export function createSaturnRingMaterial(
 }
 
 export function createEarthNightLightsMaterial(
-  nightMap: THREE.CanvasTexture,
+  nightMap: THREE.Texture,
   sunPosition: THREE.Vector3,
 ): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
@@ -566,7 +567,7 @@ export function createSolarCoronaMaterial(): THREE.ShaderMaterial {
 /**
  * Unified single-pass mobile-optimized Cinematic Post-Processing Shader:
  * 1. Contrast-Adaptive Sharpening (AMD FidelityFX CAS 5-tap) for razor-sharp photographic clarity
- * 2. Strict peripheral-edge velocity motion blur (center & mid-frame stay 100% crisp — zero planet smear!)
+ * 2. Strict peripheral-edge velocity motion blur (center & mid-frame stay 100% crisp, zero planet smear!)
  * 3. Volumetric screen-space radial solar light shafts (god-rays) from projected uSunUv
  * 4. Subtle perihelion plasma / gravitational refraction heat shimmer & refined 35mm optical grain
  */
@@ -604,7 +605,7 @@ export const CinematicPostShader = {
       return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
     }
 
-    // Lightweight 5-tap Contrast-Adaptive Sharpening (CAS) — snaps fine planetary & rock detail
+    // Lightweight 5-tap Contrast-Adaptive Sharpening (CAS) that snaps fine planetary & rock detail
     // into crisp photographic focus while suppressing ringing halos on high-contrast stars/Sun.
     vec3 sampleCAS(vec2 uv) {
       vec2 texel = 1.0 / max(uResolution, vec2(1.0));

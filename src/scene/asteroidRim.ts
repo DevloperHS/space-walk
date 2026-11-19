@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { createRng, evaluateCraterHeight, fbm3D, generateSphereCraters, ridged3D } from './noise';
 import { createRefractiveIceMaterial, enhanceMaterialWithMicroDetail } from './shaders';
-import { createAsteroidRockTextures } from './textures';
+import { createAsteroidRockPreviewTextures, enqueueAsteroidUpgrade } from './textures';
+import { ProgressiveTexturePipeline } from './texturePipeline';
 
 /**
  * Composite 9-part procedural foreground asteroid rim (THREE.Group) positioned
@@ -76,23 +77,23 @@ export function createAsteroidRim(
   sunPosition: THREE.Vector3,
   maxAniso: number,
   isSoftwareGl: boolean,
+  texturePipeline: ProgressiveTexturePipeline,
 ): AsteroidRimRig {
   const group = new THREE.Group();
   const geometries: THREE.BufferGeometry[] = [];
   const materials: THREE.Material[] = [];
-  const textures: THREE.Texture[] = [];
+  const activeTextures = new Set<THREE.Texture>();
 
-  // High-resolution 512x512 tiled PBR rock textures with Sobel tangent-space normal maps
-  const basaltTex = createAsteroidRockTextures(maxAniso, 101, [94, 90, 86], 3);
-  const silicateTex = createAsteroidRockTextures(maxAniso, 209, [136, 124, 110], 3);
-  textures.push(
-    basaltTex.map,
-    basaltTex.normalMap,
-    basaltTex.roughnessMap,
-    silicateTex.map,
-    silicateTex.normalMap,
-    silicateTex.roughnessMap,
-  );
+  // Instant lightweight 64x64 preview textures for zero-freeze first frame;
+  // full 512x512 Sobel normal PBR sets stream in off-thread at Priority 0.
+  let basaltTex = createAsteroidRockPreviewTextures(maxAniso, 101, [94, 90, 86], 3);
+  let silicateTex = createAsteroidRockPreviewTextures(maxAniso, 209, [136, 124, 110], 3);
+  activeTextures.add(basaltTex.map);
+  activeTextures.add(basaltTex.normalMap);
+  activeTextures.add(basaltTex.roughnessMap);
+  activeTextures.add(silicateTex.map);
+  activeTextures.add(silicateTex.normalMap);
+  activeTextures.add(silicateTex.roughnessMap);
 
   const basaltMat = new THREE.MeshStandardMaterial({
     map: basaltTex.map,
@@ -150,6 +151,67 @@ export function createAsteroidRim(
   });
 
   materials.push(basaltMat, silicateMat, ironNickelMat, iceShaderMat, fissureMat);
+
+  let isDisposed = false;
+  enqueueAsteroidUpgrade(
+    texturePipeline,
+    0,
+    { kind: 'asteroidRock', size: 512, seed: 101, tint: [94, 90, 86] },
+    maxAniso,
+    3,
+    (full) => {
+      if (isDisposed) {
+        full.map.dispose();
+        full.normalMap.dispose();
+        full.roughnessMap.dispose();
+        return;
+      }
+      const prev = basaltTex;
+      basaltTex = full;
+      basaltMat.map = full.map;
+      basaltMat.normalMap = full.normalMap;
+      basaltMat.roughnessMap = full.roughnessMap;
+      ironNickelMat.normalMap = full.normalMap;
+      activeTextures.delete(prev.map);
+      activeTextures.delete(prev.normalMap);
+      activeTextures.delete(prev.roughnessMap);
+      prev.map.dispose();
+      prev.normalMap.dispose();
+      prev.roughnessMap.dispose();
+      activeTextures.add(full.map);
+      activeTextures.add(full.normalMap);
+      activeTextures.add(full.roughnessMap);
+    },
+  );
+  enqueueAsteroidUpgrade(
+    texturePipeline,
+    0,
+    { kind: 'asteroidRock', size: 512, seed: 209, tint: [136, 124, 110] },
+    maxAniso,
+    3,
+    (full) => {
+      if (isDisposed) {
+        full.map.dispose();
+        full.normalMap.dispose();
+        full.roughnessMap.dispose();
+        return;
+      }
+      const prev = silicateTex;
+      silicateTex = full;
+      silicateMat.map = full.map;
+      silicateMat.normalMap = full.normalMap;
+      silicateMat.roughnessMap = full.roughnessMap;
+      activeTextures.delete(prev.map);
+      activeTextures.delete(prev.normalMap);
+      activeTextures.delete(prev.roughnessMap);
+      prev.map.dispose();
+      prev.normalMap.dispose();
+      prev.roughnessMap.dispose();
+      activeTextures.add(full.map);
+      activeTextures.add(full.normalMap);
+      activeTextures.add(full.roughnessMap);
+    },
+  );
 
   // Part 1: Primary sprawling jagged asteroid prow hull (high-tessellation lower foreground shelf)
   const prowGeo = buildDisplacedRockGeometry(1.55, 4, 17, [2.15, 0.56, 1.35], 0.42, 18);
@@ -330,9 +392,11 @@ export function createAsteroidRim(
   }
 
   function dispose() {
+    isDisposed = true;
     geometries.forEach((g) => g.dispose());
     materials.forEach((m) => m.dispose());
-    textures.forEach((t) => t.dispose());
+    activeTextures.forEach((t) => t.dispose());
+    activeTextures.clear();
   }
 
   return { group, update, dispose };
