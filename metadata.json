@@ -1,0 +1,6 @@
+{
+  "name": "Perihelion",
+  "description": "First-person cinematic voyage through the Solar System aboard a tumbling asteroid, featuring NASA-calibrated Three.js lighting, volumetric solar scattering, refraction shaders, velocity motion blur, generative spatial audio, and tactile touch steering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
