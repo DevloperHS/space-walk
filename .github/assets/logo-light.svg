@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" fill="none" role="img" aria-label="Perihelion logo">
+  <defs>
+    <linearGradient id="orbitLight" x1="16" y1="96" x2="104" y2="24" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#94a3b8" stop-opacity="0.35" />
+      <stop offset="55%" stop-color="#334155" stop-opacity="0.75" />
+      <stop offset="100%" stop-color="#d97706" stop-opacity="1" />
+    </linearGradient>
+    <radialGradient id="sunLight" cx="45%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#fde68a" />
+      <stop offset="55%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#b45309" />
+    </radialGradient>
+  </defs>
+
+  <!-- Subtle outer orbital ellipse -->
+  <ellipse
+    cx="60"
+    cy="60"
+    rx="48"
+    ry="22"
+    transform="rotate(-28 60 60)"
+    stroke="url(#orbitLight)"
+    stroke-width="2.5"
+  />
+
+  <!-- Perihelion solar focus -->
+  <circle cx="80" cy="49" r="14" fill="url(#sunLight)" />
+  <circle cx="80" cy="49" r="20" stroke="#d97706" stroke-opacity="0.22" stroke-width="1.5" />
+
+  <!-- Faceted C-type asteroid riding the orbital path -->
+  <g transform="translate(32 76) rotate(-18)">
+    <polygon points="0,-13 11,-4 8,10 -6,12 -13,1 -9,-9" fill="#0f172a" />
+    <polygon points="0,-13 11,-4 1,1 -9,-9" fill="#334155" />
+    <polygon points="11,-4 8,10 1,1" fill="#1e293b" />
+    <polygon points="-9,-9 1,1 -6,12 -13,1" fill="#020617" />
+    <polyline points="0,-13 1,1 8,10" stroke="#cbd5e1" stroke-opacity="0.35" stroke-width="1" />
+  </g>
+
+  <!-- Pinpoint background stars -->
+  <circle cx="24" cy="30" r="1.5" fill="#475569" />
+  <circle cx="98" cy="86" r="1.5" fill="#475569" />
+  <circle cx="46" cy="22" r="1.1" fill="#94a3b8" />
+  <circle cx="104" cy="34" r="1.1" fill="#94a3b8" />
+</svg>
